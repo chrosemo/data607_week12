@@ -1,0 +1,167 @@
+---
+title: "Week 12 Assignment - NoSQL Migration"
+author: "C. Rosemond 112419"
+output:
+  pdf_document:
+    latex_engine: "xelatex"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Assignment
+This assignment calls for migrating tables from a relational database to a NoSQL database. I will migrate three small tables, describing hypothetical course enrollment by three students, from PostgreSQL to Neo4j.
+
+```{r libraries, message=FALSE}
+library(RPostgres)
+library(DBI)
+library(tidyverse)
+library(neo4r)
+```
+
+
+
+
+## Export PostgreSQL tables as CSV files
+First, I connect to a local PostgreSQL database and extract three tables--students, courses, and course_enrollment--which I then write to CSV files.
+
+#### PostgreSQL connection
+```{r connectP, eval=TRUE}
+pw <- 'January2015January2019'
+connect <- dbConnect(Postgres(),
+                 dbname = 'analysis',
+                 host = 'localhost',
+                 port = 5432,
+                 user = 'postgres',
+                 password = pw)
+rm(pw)
+```
+
+
+#### Tables
+```{r read, eval=TRUE}
+students <- dbGetQuery(connect, 'SELECT * FROM students')
+students <- select(students, -student_name)
+courses <- dbGetQuery(connect, 'SELECT * FROM courses')
+courses <- courses %>% select(-course_name) %>% slice(1:5)
+enrollment <- dbGetQuery(connect, 'SELECT * FROM course_enrollment')
+```
+
+
+#### CSV files
+```{r export, eval=TRUE}
+write.csv(students, 'C:/Users/Charlie/Documents/CUNY MSDS/data607_fall19/Week12/students.csv', row.names=FALSE)
+write.csv(courses, 'C:/Users/Charlie/Documents/CUNY MSDS/data607_fall19/Week12/courses.csv', row.names=FALSE)
+write.csv(enrollment, 'C:/Users/Charlie/Documents/CUNY MSDS/data607_fall19/Week12/enrollment.csv', row.names=FALSE)
+```
+
+
+
+
+## Connect to Neo4j graph
+Next, I connect to a new graph in an already started Neo4j database.
+
+```{r connectN, eval=TRUE}
+pw <- 'January2015January2019'
+con <- neo4j_api$new(
+  url = "http://localhost:7474",
+  user = "neo4j", 
+  password = pw)
+con$ping()
+rm(pw)
+```
+
+
+
+
+## Import CSV files to Neo4j graph
+I then import the extracted CSVs from a GitHub repository and send a cypher file to Neo4j to create the relationships between nodes. 
+
+#### Students
+```{r students, eval=TRUE}
+on_load_query <- 'CREATE (n:students) 
+    SET n = row,
+    n.student_id = row.student_id
+    ;'
+# Send the csv 
+load_csv(url = "https://raw.githubusercontent.com/chrosemo/data607_week12/master/students.csv", 
+         con = con, header = TRUE, as = "row", on_load = on_load_query)
+```
+
+#### Courses
+```{r courses, eval=TRUE}
+on_load_query <- 'CREATE (n:courses) 
+    SET n = row,
+    n.course_id = row.course_id,
+    n.credits = toInteger(row.credits),
+    n.year = row.year,
+    n.semester = row.semester
+    ;'
+# Send the csv 
+load_csv(url = "https://raw.githubusercontent.com/chrosemo/data607_week12/master/courses.csv", 
+         con = con, header = TRUE, as = "row", on_load = on_load_query)
+```
+
+
+#### Enrollment
+```{r enrollment, eval=TRUE}
+on_load_query <- 'CREATE (n:enrollment) 
+    SET n = row,
+    n.course_id = row.course_id,
+    n.student_id = row.student_id
+    ;'
+# Send the csv 
+load_csv(url = "https://raw.githubusercontent.com/chrosemo/data607_week12/master/enrollment.csv", 
+         con = con, header = TRUE, as = "row", on_load = on_load_query)
+```
+
+
+#### Cypher file
+```{r cypher, eval=TRUE, results='hide', warning=FALSE}
+read_cypher('CR_assignment12_112419.cypher')
+send_cypher('CR_assignment12_112419.cypher', con)
+```
+
+
+
+
+## Create and visualize graph object
+Lastly, I extract node and relationship information to create a graph object in R.
+
+#### Query
+```{r query, eval=TRUE}
+g <-"MATCH p=()-[r:ENROLLED_IN]->() RETURN p;" %>% 
+call_neo4j(con, type = "graph") 
+```
+
+
+#### Nodes
+```{r nodes, eval=TRUE}
+g$nodes <- g$nodes %>% unnest_nodes(what = "properties") %>% mutate(label = map_chr(label, 1))
+head(g$nodes)
+```
+
+
+#### Relationships
+```{r relationships, eval=TRUE}
+g$relationships <- g$relationships %>% unnest_relationships() %>% select(startNode, endNode, type, everything())
+head(g$relationships)
+```
+
+
+#### Graph
+```{r example_graph, eval=TRUE}
+enrollment_graph <- igraph::graph_from_data_frame(
+  d = g$relationships, 
+  directed = TRUE, 
+  vertices = g$nodes
+)
+plot(enrollment_graph)
+```
+
+
+
+
+## Neo4j: Advantages and disadvantages
+I used small and straightforward data sets for this assignment, so the differences in performance between PostgreSQL and Neo4j are minimal, and my familiarity with SQL wins out. Broadly speaking, using Neo4j (or another NoSQL database) offers pros and cons relative to using a relational database. NoSQL databases are built upon hierarchical relationships, which can facilitate database searches and indexing. By comparison, traditional SQL databases are rather flat and do not enable hierarchies. Additionally, NoSQL databases offers users flexibility through limited structure as well as dynamic schema. The strict structure of SQL can be limiting, though it also offers a standard language to query the database compared to the varied languages used across NoSQL.
